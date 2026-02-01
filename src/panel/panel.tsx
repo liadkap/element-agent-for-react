@@ -47,6 +47,7 @@ interface Settings {
   baseBranch: string;
   autoCreatePr: boolean;
   preferredProvider: AgentProvider;
+  prTitleFormat: string;
 }
 
 interface PRInfo {
@@ -289,6 +290,19 @@ const styles = {
     padding: 20,
     paddingBottom: 100,
   },
+  settingsSection: {
+    marginBottom: 24,
+  },
+  settingsSectionTitle: {
+    fontSize: 11,
+    fontWeight: 600,
+    color: '#888',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.5px',
+    marginBottom: 12,
+    paddingBottom: 8,
+    borderBottom: '1px solid #3c3c3c',
+  },
   inputGroup: {
     marginBottom: 16,
   },
@@ -466,6 +480,50 @@ const styles = {
     outline: 'none',
     resize: 'none' as const,
   },
+  tooltipContainer: {
+    position: 'relative' as const,
+    display: 'inline-flex',
+    alignItems: 'center',
+  },
+  infoIconBtn: {
+    background: 'transparent',
+    border: 'none',
+    color: '#888',
+    cursor: 'help',
+    padding: 4,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 4,
+  },
+  tooltip: {
+    position: 'absolute' as const,
+    bottom: '100%',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    background: '#1e1e1e',
+    border: '1px solid #555',
+    borderRadius: 6,
+    padding: '10px 12px',
+    fontSize: 11,
+    color: '#e0e0e0',
+    whiteSpace: 'nowrap' as const,
+    zIndex: 1000,
+    marginBottom: 8,
+    boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+    lineHeight: 1.5,
+  },
+  tooltipArrow: {
+    position: 'absolute' as const,
+    top: '100%',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    width: 0,
+    height: 0,
+    borderLeft: '6px solid transparent',
+    borderRight: '6px solid transparent',
+    borderTop: '6px solid #555',
+  },
 };
 
 function generateId(): string {
@@ -492,6 +550,15 @@ function BackIcon() {
   return (
     <svg width='16' height='16' viewBox='0 0 16 16' fill='currentColor'>
       <path d='M5.9 7.5L10.4 3l.7.7L7.3 7.5l3.8 3.8-.7.7-4.5-4.5z' />
+    </svg>
+  );
+}
+
+function InfoIcon() {
+  return (
+    <svg width='14' height='14' viewBox='0 0 16 16' fill='currentColor'>
+      <path d='M8 1C4.13 1 1 4.13 1 8s3.13 7 7 7 7-3.13 7-7-3.13-7-7-7zm0 13c-3.31 0-6-2.69-6-6s2.69-6 6-6 6 2.69 6 6-2.69 6-6 6z' />
+      <path d='M7 6h2v6H7V6zm0-3h2v2H7V3z' />
     </svg>
   );
 }
@@ -721,6 +788,7 @@ function App() {
     baseBranch: 'main',
     autoCreatePr: true,
     preferredProvider: 'cursor',
+    prTitleFormat: '[ElementAgent] {title}',
   });
   const [prInfo, setPrInfo] = useState<PRInfo>({ title: '', ticketUrl: '' });
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -749,8 +817,8 @@ function App() {
 
   useEffect(() => {
     const tabId = chrome.devtools.inspectedWindow.tabId;
-    const newPort = chrome.runtime.connect({ name: `devtools-${tabId}` });
-    setPort(newPort);
+    let currentPort: chrome.runtime.Port | null = null;
+    let isCleaningUp = false;
 
     const messageHandler = (msg: { type: string; payload?: { selector: string; meta: ElementMeta }; error?: string }) => {
       try {
@@ -770,15 +838,38 @@ function App() {
       }
     };
 
-    newPort.onMessage.addListener(messageHandler);
+    const connectPort = () => {
+      if (isCleaningUp) return;
+      
+      try {
+        currentPort = chrome.runtime.connect({ name: `devtools-${tabId}` });
+        setPort(currentPort);
 
-    newPort.onDisconnect.addListener(() => {
-      setPort(null);
-    });
+        currentPort.onMessage.addListener(messageHandler);
+
+        currentPort.onDisconnect.addListener(() => {
+          setPort(null);
+          currentPort = null;
+          if (!isCleaningUp) {
+            setTimeout(connectPort, 100);
+          }
+        });
+      } catch (e) {
+        console.error('[ElementAgent] Failed to connect port:', e);
+        if (!isCleaningUp) {
+          setTimeout(connectPort, 500);
+        }
+      }
+    };
+
+    connectPort();
 
     return () => {
+      isCleaningUp = true;
       try {
-        newPort.disconnect();
+        if (currentPort) {
+          currentPort.disconnect();
+        }
       } catch {
         // Port may already be disconnected
       }
@@ -991,11 +1082,15 @@ function App() {
       })
       .join('\n\n---\n\n');
 
+    const formattedPrTitle = prInfo.title && settings.prTitleFormat
+      ? settings.prTitleFormat.replace('{title}', prInfo.title)
+      : prInfo.title;
+
     const prSection =
       prInfo.title || prInfo.ticketUrl
         ? `
 ## Pull Request
-${prInfo.title ? `- **Title:** ${prInfo.title}` : ''}
+${formattedPrTitle ? `- **Title:** ${formattedPrTitle}` : ''}
 ${prInfo.ticketUrl ? `- **Ticket:** ${prInfo.ticketUrl}` : ''}
 `
         : '';
@@ -1052,10 +1147,10 @@ ${fixDescriptions}
 5. **IMPORTANT: If the selected element is a repeatable item (e.g., list item, card in a grid, table row, or any item rendered in a loop/map), apply the change to the component or template that generates ALL similar items, not just one instance. Look for .map(), .forEach(), or array rendering patterns.**
 6. Ensure TypeScript types are correct
 7. Run \`yarn lint\` and \`yarn type-check\` after changes
-${prInfo.title ? `8. Create PR with title: "${prInfo.title}"` : ''}
+${formattedPrTitle ? `8. Create PR with title: "${formattedPrTitle}"` : ''}
 ${prInfo.ticketUrl ? `9. Reference: ${prInfo.ticketUrl}` : ''}
 `;
-  }, [fixes, pageUrl, settings.repositoryUrl, prInfo]);
+  }, [fixes, pageUrl, settings.repositoryUrl, settings.prTitleFormat, prInfo]);
 
   const copyPrompt = useCallback(async () => {
     const prompt = generatePrompt();
@@ -1127,7 +1222,7 @@ ${prInfo.ticketUrl ? `9. Reference: ${prInfo.ticketUrl}` : ''}
             target: {
               autoCreatePr: settings.autoCreatePr,
               branchName: prInfo.title
-                ? `element-agent/${prInfo.title
+                ? `element-agent/${(settings.prTitleFormat ? settings.prTitleFormat.replace('{title}', prInfo.title) : prInfo.title)
                     .toLowerCase()
                     .replace(/[^a-z0-9]+/g, '-')
                     .slice(0, 40)}`
@@ -1207,105 +1302,130 @@ ${prInfo.ticketUrl ? `9. Reference: ${prInfo.ticketUrl}` : ''}
           <div style={{ width: 28 }} />
         </div>
         <div style={styles.settingsPanel}>
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>Preferred Provider</label>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                style={{
-                  ...styles.pickerBtn,
-                  flex: 1,
-                  background: settings.preferredProvider === 'cursor' ? '#0e639c' : '#3c3c3c',
-                }}
-                onClick={() => setSettings({ ...settings, preferredProvider: 'cursor' })}
-              >
-                Cursor
-              </button>
-              <button
-                style={{
-                  ...styles.pickerBtn,
-                  flex: 1,
-                  background: settings.preferredProvider === 'cloudCode' ? '#0e639c' : '#3c3c3c',
-                }}
-                onClick={() => setSettings({ ...settings, preferredProvider: 'cloudCode' })}
-              >
-                Cloud Code
-              </button>
+          <div style={styles.settingsSection}>
+            <div style={styles.settingsSectionTitle}>AI Provider</div>
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Preferred Provider</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  style={{
+                    ...styles.pickerBtn,
+                    flex: 1,
+                    background: settings.preferredProvider === 'cursor' ? '#0e639c' : '#3c3c3c',
+                  }}
+                  onClick={() => setSettings({ ...settings, preferredProvider: 'cursor', cloudCodeApiKey: '' })}
+                >
+                  Cursor
+                </button>
+                <button
+                  style={{
+                    ...styles.pickerBtn,
+                    flex: 1,
+                    background: settings.preferredProvider === 'cloudCode' ? '#0e639c' : '#3c3c3c',
+                  }}
+                  onClick={() => setSettings({ ...settings, preferredProvider: 'cloudCode', cursorApiKey: '' })}
+                >
+                  Cloud Code
+                </button>
+              </div>
             </div>
-          </div>
 
-          <div style={styles.warningBox}>
-            {settings.preferredProvider === 'cursor' ? (
-              <>
-                Get your Cursor API key from{' '}
-                <a href='https://cursor.com/settings' target='_blank' rel='noreferrer' style={{ color: '#fcd34d' }}>
-                  cursor.com/settings
-                </a>
-              </>
-            ) : (
-              <>
-                Get your Cloud Code API key from{' '}
-                <a href='https://console.anthropic.com/settings/keys' target='_blank' rel='noreferrer' style={{ color: '#fcd34d' }}>
-                  console.anthropic.com
-                </a>
-              </>
+            <div style={styles.warningBox}>
+              {settings.preferredProvider === 'cursor' ? (
+                <>
+                  Get your Cursor API key from{' '}
+                  <a href='https://cursor.com/settings' target='_blank' rel='noreferrer' style={{ color: '#fcd34d' }}>
+                    cursor.com/settings
+                  </a>
+                </>
+              ) : (
+                <>
+                  Get your Cloud Code API key from{' '}
+                  <a href='https://console.anthropic.com/settings/keys' target='_blank' rel='noreferrer' style={{ color: '#fcd34d' }}>
+                    console.anthropic.com
+                  </a>
+                </>
+              )}
+            </div>
+
+            {settings.preferredProvider === 'cursor' && (
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Cursor API Key *</label>
+                <input
+                  type='password'
+                  style={styles.input}
+                  value={settings.cursorApiKey}
+                  onChange={(e) => setSettings({ ...settings, cursorApiKey: e.target.value })}
+                  placeholder='cur_...'
+                />
+              </div>
+            )}
+
+            {settings.preferredProvider === 'cloudCode' && (
+              <div style={styles.inputGroup}>
+                <label style={styles.label}>Cloud Code API Key *</label>
+                <input
+                  type='password'
+                  style={styles.input}
+                  value={settings.cloudCodeApiKey}
+                  onChange={(e) => setSettings({ ...settings, cloudCodeApiKey: e.target.value })}
+                  placeholder='sk-ant-...'
+                />
+              </div>
             )}
           </div>
 
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>Cursor API Key {settings.preferredProvider === 'cursor' ? '*' : ''}</label>
-            <input
-              type='password'
-              style={styles.input}
-              value={settings.cursorApiKey}
-              onChange={(e) => setSettings({ ...settings, cursorApiKey: e.target.value })}
-              placeholder='cur_...'
-            />
-          </div>
-
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>Cloud Code API Key {settings.preferredProvider === 'cloudCode' ? '*' : ''}</label>
-            <input
-              type='password'
-              style={styles.input}
-              value={settings.cloudCodeApiKey}
-              onChange={(e) => setSettings({ ...settings, cloudCodeApiKey: e.target.value })}
-              placeholder='sk-ant-...'
-            />
-          </div>
-
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>Repository URL *</label>
-            <input
-              type='text'
-              style={styles.input}
-              value={settings.repositoryUrl}
-              onChange={(e) => setSettings({ ...settings, repositoryUrl: e.target.value })}
-              placeholder='https://github.com/your-org/your-repo'
-            />
-            <div style={styles.helpText}>The GitHub repository URL where changes will be made</div>
-          </div>
-
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>Base Branch</label>
-            <input
-              type='text'
-              style={styles.input}
-              value={settings.baseBranch}
-              onChange={(e) => setSettings({ ...settings, baseBranch: e.target.value })}
-              placeholder='main'
-            />
-            <div style={styles.helpText}>Branch to base changes on (default: main)</div>
-          </div>
-
-          <div style={styles.inputGroup}>
-            <label style={styles.checkbox}>
+          <div style={styles.settingsSection}>
+            <div style={styles.settingsSectionTitle}>Repository</div>
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Repository URL *</label>
               <input
-                type='checkbox'
-                checked={settings.autoCreatePr}
-                onChange={(e) => setSettings({ ...settings, autoCreatePr: e.target.checked })}
+                type='text'
+                style={styles.input}
+                value={settings.repositoryUrl}
+                onChange={(e) => setSettings({ ...settings, repositoryUrl: e.target.value })}
+                placeholder='https://github.com/your-org/your-repo'
               />
-              <span>Automatically create Pull Request</span>
-            </label>
+              <div style={styles.helpText}>The GitHub repository URL where changes will be made</div>
+            </div>
+
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>Base Branch</label>
+              <input
+                type='text'
+                style={styles.input}
+                value={settings.baseBranch}
+                onChange={(e) => setSettings({ ...settings, baseBranch: e.target.value })}
+                placeholder='main'
+              />
+              <div style={styles.helpText}>Branch to base changes on (default: main)</div>
+            </div>
+          </div>
+
+          <div style={styles.settingsSection}>
+            <div style={styles.settingsSectionTitle}>Pull Request</div>
+            <div style={styles.inputGroup}>
+              <label style={styles.checkbox}>
+                <input
+                  type='checkbox'
+                  checked={settings.autoCreatePr}
+                  onChange={(e) => setSettings({ ...settings, autoCreatePr: e.target.checked })}
+                />
+                <span>Automatically create Pull Request</span>
+              </label>
+            </div>
+
+            <div style={styles.inputGroup}>
+              <label style={styles.label}>PR Title Format</label>
+              <input
+                type='text'
+                style={styles.input}
+                value={settings.prTitleFormat}
+                onChange={(e) => setSettings({ ...settings, prTitleFormat: e.target.value })}
+                placeholder='[ElementAgent] {title}'
+              />
+              <div style={styles.helpText}>Use {'{title}'} as placeholder for the PR title you enter</div>
+            </div>
           </div>
 
           <button style={{ ...styles.submitBtn, width: '100%' }} onClick={saveSettings}>
@@ -1373,9 +1493,32 @@ ${prInfo.ticketUrl ? `9. Reference: ${prInfo.ticketUrl}` : ''}
           <PickerIcon />
           {pickerActive ? 'Click element or ESC' : 'Pick Element'}
         </button>
-        <button style={{ ...styles.pickerBtn, background: '#3c3c3c' }} onClick={captureFromDevtools}>
-          Capture $0
-        </button>
+        <div style={styles.tooltipContainer}>
+          <button style={{ ...styles.pickerBtn, background: '#3c3c3c' }} onClick={captureFromDevtools}>
+            Capture from DevTools
+          </button>
+          <div style={styles.tooltipContainer}>
+            <button
+              style={styles.infoIconBtn}
+              onMouseEnter={(e) => {
+                const tooltip = e.currentTarget.nextElementSibling as HTMLElement;
+                if (tooltip) tooltip.style.display = 'block';
+              }}
+              onMouseLeave={(e) => {
+                const tooltip = e.currentTarget.nextElementSibling as HTMLElement;
+                if (tooltip) tooltip.style.display = 'none';
+              }}
+            >
+              <InfoIcon />
+            </button>
+            <div style={{ ...styles.tooltip, display: 'none' }}>
+              <div>1. Go to Elements panel in DevTools</div>
+              <div>2. Select an element you want to capture</div>
+              <div>3. Click this button to capture it</div>
+              <div style={styles.tooltipArrow} />
+            </div>
+          </div>
+        </div>
         {fixes.length > 0 && (
           <button
             style={{ ...styles.pickerBtn, background: 'transparent', color: '#f87171', marginLeft: 'auto' }}
@@ -1456,7 +1599,7 @@ ${prInfo.ticketUrl ? `9. Reference: ${prInfo.ticketUrl}` : ''}
             <div style={{ fontSize: 12, color: '#666', lineHeight: 1.5 }}>
               Click <strong>"Pick Element"</strong> to select elements directly on the page,
               <br />
-              or select in Elements panel and click <strong>"Capture $0"</strong>
+              or select in Elements panel and click <strong>"Capture from DevTools"</strong>
             </div>
           </div>
         ) : (
@@ -1507,7 +1650,7 @@ ${prInfo.ticketUrl ? `9. Reference: ${prInfo.ticketUrl}` : ''}
                 {(isEditing || !f.confirmed) && (
                   <div style={styles.fixCardEditing}>
                     <textarea
-                      style={{ ...styles.inputFlex, minHeight: 60 }}
+                      style={{ ...styles.inputFlex, minHeight: 80, width: '100%', boxSizing: 'border-box' as const }}
                       placeholder='Describe the change you want...'
                       value={f.request}
                       onChange={(e) => setRequest(f.id, e.target.value)}

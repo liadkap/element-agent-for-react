@@ -22,6 +22,15 @@ Then load the `dist` folder in Chrome:
 3. Click **Load unpacked**
 4. Select the `dist` folder
 
+## Requirements for AI Agents
+
+To use this extension with **Claude Code** or **Cursor**, the AI agent needs:
+
+- **Task Management Access** - Ability to create and manage tasks/todos for tracking the implementation steps
+- **Git Repository Access** - Permission to read/write to the git repository to create commits and pull requests
+
+Make sure your AI agent is configured with these permissions before sending prompts.
+
 ## Usage
 
 1. Open your app in Chrome
